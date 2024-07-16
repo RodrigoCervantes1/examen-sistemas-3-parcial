@@ -1,0 +1,711 @@
+import tkinter as tk
+from tkinter import ttk, filedialog
+from PIL import Image, ImageTk
+import numpy as np
+import tensorflow as tf
+import threading
+import cv2
+import os
+
+# Cargar los conjuntos de datos existentes
+(x_train_mnist, y_train_mnist), (x_test_mnist, y_test_mnist) = tf.keras.datasets.mnist.load_data()
+(x_train_fashion, y_train_fashion), (x_test_fashion, y_test_fashion) = tf.keras.datasets.fashion_mnist.load_data()
+(x_train_cifar, y_train_cifar), (x_test_cifar, y_test_cifar) = tf.keras.datasets.cifar10.load_data()
+
+# Crear conjunto de datos de figuras geométricas
+def create_geometric_dataset(num_samples=10000):
+    x_train = []
+    y_train = []
+    shapes = ['circle', 'square', 'triangle', 'rectangle', 'ellipse', 'pentagon', 'hexagon']
+    
+    for _ in range(num_samples):
+        img = np.zeros((28, 28), dtype=np.uint8)
+        shape = np.random.choice(shapes)
+        
+        # Generar parámetros aleatorios
+        center = (np.random.randint(7, 21), np.random.randint(7, 21))
+        size = np.random.randint(5, 12)
+        rotation = np.random.randint(0, 360)
+        
+        if shape == 'circle':
+            cv2.circle(img, center, size, 255, -1)
+            y_train.append(0)
+        elif shape == 'square':
+            rect = cv2.boxPoints(((center[0], center[1]), (size*2, size*2), rotation))
+            rect = np.int0(rect)
+            cv2.drawContours(img, [rect], 0, 255, -1)
+            y_train.append(1)
+        elif shape == 'triangle':
+            pts = np.array([[center[0], center[1]-size],
+                            [center[0]-size, center[1]+size],
+                            [center[0]+size, center[1]+size]], np.float32)
+            pts = pts - center
+            rot_mat = cv2.getRotationMatrix2D((0, 0), rotation, 1.0)
+            pts = cv2.transform(pts.reshape(1, -1, 2), rot_mat).reshape(-1, 2)
+            pts = pts + center
+            cv2.fillPoly(img, [np.int0(pts)], 255)
+            y_train.append(2)
+        elif shape == 'rectangle':
+            rect = cv2.boxPoints(((center[0], center[1]), (size*3, size*2), rotation))
+            rect = np.int0(rect)
+            cv2.drawContours(img, [rect], 0, 255, -1)
+            y_train.append(3)
+        elif shape == 'ellipse':
+            cv2.ellipse(img, center, (size, int(size*0.6)), rotation, 0, 360, 255, -1)
+            y_train.append(4)
+        elif shape == 'pentagon':
+            pts = np.array([
+                [center[0], center[1]-size],
+                [center[0]+size*np.cos(np.pi/10), center[1]-size*np.sin(np.pi/10)],
+                [center[0]+size*np.cos(np.pi/10), center[1]+size*np.sin(np.pi/10)],
+                [center[0]-size*np.cos(np.pi/10), center[1]+size*np.sin(np.pi/10)],
+                [center[0]-size*np.cos(np.pi/10), center[1]-size*np.sin(np.pi/10)]
+            ], np.float32)
+            pts = pts - center
+            rot_mat = cv2.getRotationMatrix2D((0, 0), rotation, 1.0)
+            pts = cv2.transform(pts.reshape(1, -1, 2), rot_mat).reshape(-1, 2)
+            pts = pts + center
+            cv2.fillPoly(img, [np.int0(pts)], 255)
+            y_train.append(5)
+        elif shape == 'hexagon':
+            pts = np.array([
+                [center[0], center[1]-size],
+                [center[0]+size*np.cos(np.pi/6), center[1]-size*np.sin(np.pi/6)],
+                [center[0]+size*np.cos(np.pi/6), center[1]+size*np.sin(np.pi/6)],
+                [center[0], center[1]+size],
+                [center[0]-size*np.cos(np.pi/6), center[1]+size*np.sin(np.pi/6)],
+                [center[0]-size*np.cos(np.pi/6), center[1]-size*np.sin(np.pi/6)]
+            ], np.float32)
+            pts = pts - center
+            rot_mat = cv2.getRotationMatrix2D((0, 0), rotation, 1.0)
+            pts = cv2.transform(pts.reshape(1, -1, 2), rot_mat).reshape(-1, 2)
+            pts = pts + center
+            cv2.fillPoly(img, [np.int0(pts)], 255)
+            y_train.append(6)
+        
+        x_train.append(img)
+    
+    return np.array(x_train), np.array(y_train)
+
+x_train_geo, y_train_geo = create_geometric_dataset()
+x_test_geo, y_test_geo = create_geometric_dataset(num_samples=2000)
+
+# Normalizar los datos
+x_train_mnist = x_train_mnist.astype('float32') / 255
+x_test_mnist = x_test_mnist.astype('float32') / 255
+x_train_fashion = x_train_fashion.astype('float32') / 255
+x_test_fashion = x_test_fashion.astype('float32') / 255
+x_train_cifar = x_train_cifar.astype('float32') / 255
+x_test_cifar = x_test_cifar.astype('float32') / 255
+x_train_geo = x_train_geo.astype('float32') / 255
+x_test_geo = x_test_geo.astype('float32') / 255
+
+# Añadir una dimensión de canal para MNIST, Fashion MNIST y figuras geométricas
+x_train_mnist = np.expand_dims(x_train_mnist, -1)
+x_test_mnist = np.expand_dims(x_test_mnist, -1)
+x_train_fashion = np.expand_dims(x_train_fashion, -1)
+x_test_fashion = np.expand_dims(x_test_fashion, -1)
+x_train_geo = np.expand_dims(x_train_geo, -1)
+x_test_geo = np.expand_dims(x_test_geo, -1)
+
+# Convertir las etiquetas a categorías
+y_train_mnist = tf.keras.utils.to_categorical(y_train_mnist, 10)
+y_test_mnist = tf.keras.utils.to_categorical(y_test_mnist, 10)
+y_train_fashion = tf.keras.utils.to_categorical(y_train_fashion, 10)
+y_test_fashion = tf.keras.utils.to_categorical(y_test_fashion, 10)
+y_train_cifar = tf.keras.utils.to_categorical(y_train_cifar, 10)
+y_test_cifar = tf.keras.utils.to_categorical(y_test_cifar, 10)
+y_train_geo = tf.keras.utils.to_categorical(y_train_geo, 7)
+y_test_geo = tf.keras.utils.to_categorical(y_test_geo, 7)
+
+# Crear modelos de red neuronal
+def create_mnist_model():
+    model = tf.keras.Sequential([
+        tf.keras.layers.Conv2D(32, kernel_size=(3, 3), activation='relu', input_shape=(28, 28, 1)),
+        tf.keras.layers.MaxPooling2D(pool_size=(2, 2)),
+        tf.keras.layers.Conv2D(64, kernel_size=(3, 3), activation='relu'),
+        tf.keras.layers.MaxPooling2D(pool_size=(2, 2)),
+        tf.keras.layers.Conv2D(64, kernel_size=(3, 3), activation='relu'),
+        tf.keras.layers.Flatten(),
+        tf.keras.layers.Dropout(0.5),
+        tf.keras.layers.Dense(64, activation='relu'),
+        tf.keras.layers.Dense(10, activation='softmax')
+    ])
+    model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
+    return model
+
+def create_fashion_mnist_model():
+    model = tf.keras.Sequential([
+        tf.keras.layers.Conv2D(32, kernel_size=(3, 3), activation='relu', input_shape=(28, 28, 1)),
+        tf.keras.layers.MaxPooling2D(pool_size=(2, 2)),
+        tf.keras.layers.Conv2D(64, kernel_size=(3, 3), activation='relu'),
+        tf.keras.layers.MaxPooling2D(pool_size=(2, 2)),
+        tf.keras.layers.Flatten(),
+        tf.keras.layers.Dropout(0.5),
+        tf.keras.layers.Dense(10, activation='softmax')
+    ])
+    model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
+    return model
+
+def create_cifar_model():
+    model = tf.keras.Sequential([
+        tf.keras.layers.Conv2D(32, kernel_size=(3, 3), activation='relu', input_shape=(32, 32, 3)),
+        tf.keras.layers.MaxPooling2D(pool_size=(2, 2)),
+        tf.keras.layers.Conv2D(64, kernel_size=(3, 3), activation='relu'),
+        tf.keras.layers.MaxPooling2D(pool_size=(2, 2)),
+        tf.keras.layers.Flatten(),
+        tf.keras.layers.Dropout(0.5),
+        tf.keras.layers.Dense(10, activation='softmax')
+    ])
+    model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
+    return model
+
+def create_geometric_model():
+    model = tf.keras.Sequential([
+        tf.keras.layers.Conv2D(32, kernel_size=(3, 3), activation='relu', input_shape=(28, 28, 1)),
+        tf.keras.layers.MaxPooling2D(pool_size=(2, 2)),
+        tf.keras.layers.Conv2D(64, kernel_size=(3, 3), activation='relu'),
+        tf.keras.layers.MaxPooling2D(pool_size=(2, 2)),
+        tf.keras.layers.Flatten(),
+        tf.keras.layers.Dropout(0.5),
+        tf.keras.layers.Dense(7, activation='softmax')
+    ])
+    model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
+    return model
+
+# Crear los modelos
+model_mnist = create_mnist_model()
+model_fashion = create_fashion_mnist_model()
+model_cifar = create_cifar_model()
+model_geo = create_geometric_model()
+
+current_model = model_mnist
+current_dataset = 'mnist'
+last_trained_accuracy = 0
+
+# Variables globales para almacenar imágenes
+stored_images = {'mnist': [], 'fashion': [], 'cifar': [], 'geo': []}
+max_stored_images = 100  # Número máximo de imágenes almacenadas por dataset
+
+# Variables para almacenar imágenes del usuario
+user_images = []
+user_labels = []
+
+# Diccionario para almacenar predicciones anteriores
+previous_predictions = {}
+
+# Función para almacenar imágenes
+def store_images():
+    global stored_images
+    for dataset, x_test in [('mnist', x_test_mnist), ('fashion', x_test_fashion), 
+                            ('cifar', x_test_cifar), ('geo', x_test_geo)]:
+        indices = np.random.choice(len(x_test), max_stored_images, replace=False)
+        stored_images[dataset] = [x_test[i] for i in indices]
+
+# Llamar a esta función al inicio del programa
+store_images()
+
+# Función para clasificar la imagen
+def classify_image(image):
+    global previous_predictions
+    
+    if current_dataset in ['mnist', 'fashion', 'geo']:
+        img_array = np.expand_dims(image, -1)
+    else:
+        img_array = image
+    img_array = np.expand_dims(img_array, 0)
+    
+    # Generar una clave única para la imagen
+    image_key = hash(img_array.tobytes())
+    
+    if image_key in previous_predictions:
+        # Usar las predicciones ajustadas si existen
+        return previous_predictions[image_key]
+    else:
+        # Si es la primera vez que se ve esta imagen, hacer la predicción
+        predictions = current_model.predict(img_array)[0]
+        previous_predictions[image_key] = predictions
+        return predictions
+
+# Función para guardar el entrenamiento
+def save_training():
+    if current_model is None:
+        update_result_text("No hay modelo entrenado para guardar.")
+        return
+    
+    # Determinar el conjunto de datos de prueba y etiquetas correspondientes
+    if current_dataset == 'mnist':
+        x_test, y_test = x_test_mnist, y_test_mnist
+        dataset_name = 'digitos'
+    elif current_dataset == 'fashion':
+        x_test, y_test = x_test_fashion, y_test_fashion
+        dataset_name = 'ropa'
+    elif current_dataset == 'cifar':
+        x_test, y_test = x_test_cifar, y_test_cifar
+        dataset_name = 'animales_y_vehiculos'
+    else:  # Figuras geometricas
+        x_test, y_test = x_test_geo, y_test_geo
+        dataset_name = 'figuras_geometricas'
+    
+    # Evaluar el modelo
+    accuracy = current_model.evaluate(x_test, y_test)[1]
+    
+    # Crear el nombre del archivo
+    filename = f"{dataset_name}_model_{accuracy*100:.2f}%.h5"
+    
+    # Guardar el modelo
+    current_model.save(filename)
+    update_result_text(f"Modelo guardado como {filename}")
+
+# Función para cargar un entrenamiento
+def load_training():
+    global current_model, current_dataset
+    filename = filedialog.askopenfilename(filetypes=[("H5 files", "*.h5")])
+    if filename:
+        current_model = tf.keras.models.load_model(filename)
+        dataset_name = os.path.basename(filename).split('_')[0]
+        accuracy_str = os.path.basename(filename).split('_')[-1].replace('.h5', '')
+        accuracy = float(accuracy_str.rstrip('%')) / 100
+        
+        # Actualizar el dataset actual basado en el nombre del archivo
+        if 'digitos' in dataset_name:
+            current_dataset = 'mnist'
+            dataset_var.set("Dígitos")
+        elif 'ropa' in dataset_name:
+            current_dataset = 'fashion'
+            dataset_var.set("Ropa")
+        elif 'animales_y_vehiculos' in dataset_name:
+            current_dataset
+        elif 'animales_y_vehiculos' in dataset_name:
+            current_dataset = 'cifar'
+            dataset_var.set("Animales y vehículos")
+        elif 'figuras_geometricas' in dataset_name:
+            current_dataset = 'geo'
+            dataset_var.set("Figuras geométricas")
+        
+        update_result_text(f"Modelo cargado: {filename}\nPrecisión: {accuracy:.2%}")
+        
+        # Habilitar botones relevantes
+        save_model_button.pack(side=tk.LEFT, padx=5)
+        select_button.pack(side=tk.LEFT, padx=5)
+        load_image_button.pack(side=tk.LEFT, padx=5)
+
+# Función para entrenar la red
+def train_network():
+    global last_trained_accuracy, user_images, user_labels
+    train_button.pack_forget()
+    change_dataset_button.pack_forget()
+    load_model_button.pack_forget()
+    progress_bar['value'] = 0
+    progress_label.config(text="Entrenamiento en proceso")
+    
+    def train_process():
+        global last_trained_accuracy
+        if current_dataset == 'mnist':
+            x_train, y_train = x_train_mnist, y_train_mnist
+            num_classes = 10
+            img_shape = (28, 28, 1)
+        elif current_dataset == 'fashion':
+            x_train, y_train = x_train_fashion, y_train_fashion
+            num_classes = 10
+            img_shape = (28, 28, 1)
+        elif current_dataset == 'cifar':
+            x_train, y_train = x_train_cifar, y_train_cifar
+            num_classes = 10
+            img_shape = (32, 32, 3)
+        else:  # geo
+            x_train, y_train = x_train_geo, y_train_geo
+            num_classes = 7
+            img_shape = (28, 28, 1)
+        
+        # Agregar imágenes del usuario al conjunto de entrenamiento, repitiéndolas 10 veces
+        if user_images and user_labels:
+            user_images_array = np.array(user_images)
+            user_labels_array = np.array(user_labels)
+            
+            # Redimensionar las imágenes del usuario si es necesario
+            if user_images_array.shape[1:] != img_shape:
+                resized_user_images = []
+                for img in user_images_array:
+                    if len(img_shape) == 3 and img.shape[-1] != img_shape[-1]:
+                        # Convertir a RGB si es necesario
+                        img = np.repeat(img, 3, axis=-1) if img.shape[-1] == 1 else img[:,:,0]
+                    resized_img = cv2.resize(img, (img_shape[0], img_shape[1]))
+                    if len(img_shape) == 3:
+                        resized_img = resized_img.reshape(img_shape)
+                    resized_user_images.append(resized_img)
+                user_images_array = np.array(resized_user_images)
+            
+            # Asegurarse de que las etiquetas del usuario estén dentro del rango correcto
+            user_labels_array = np.clip(user_labels_array, 0, num_classes - 1)
+            
+            num_repeats = 10
+            x_train = np.concatenate([x_train] + [user_images_array] * num_repeats)
+            y_train = np.concatenate([y_train] + [tf.keras.utils.to_categorical(user_labels_array, num_classes=num_classes)] * num_repeats)
+        
+        class ProgressCallback(tf.keras.callbacks.Callback):
+            def on_train_begin(self, logs=None):
+                self.epochs = self.params['epochs']
+                self.step = 0
+                self.total_steps = self.params['steps'] * self.epochs
+
+            def on_batch_end(self, batch, logs=None):
+                self.step += 1
+                progress = (self.step / self.total_steps) * 100
+                root.after(0, update_progress, progress)
+
+        history = current_model.fit(x_train, y_train, 
+                            batch_size=128, 
+                            epochs=10,
+                            validation_split=0.2,
+                            callbacks=[ProgressCallback()])
+        
+        last_trained_accuracy = history.history['accuracy'][-1]
+        
+        train_button.pack(side=tk.LEFT, padx=5)
+        change_dataset_button.pack(side=tk.LEFT, padx=5)
+        load_model_button.pack(side=tk.LEFT, padx=5)
+        save_model_button.pack(side=tk.LEFT, padx=5)
+        select_button.pack(side=tk.LEFT, padx=5)
+        load_image_button.pack(side=tk.LEFT, padx=5)
+        update_result_text(f"Entrenamiento completado.\nPrecisión final: {last_trained_accuracy*100:.2f}%")
+        
+        # Evaluar la precisión en las imágenes del usuario
+        evaluate_overall_accuracy()
+        
+        progress_label.config(text="")
+        progress_bar['value'] = 0
+    
+    threading.Thread(target=train_process).start()
+
+# Función para actualizar la barra de progreso
+def update_progress(progress):
+    progress_bar['value'] = progress
+    progress_label.config(text=f"Entrenamiento en proceso: {progress:.1f}%")
+    if progress >= 100:
+        progress_label.config(text="Entrenamiento completado")
+
+# Función para seleccionar y clasificar múltiples imágenes
+def select_images():
+    for widget in left_image_frame.winfo_children():
+        widget.destroy()
+    
+    if current_dataset == 'mnist':
+        images = stored_images['mnist']
+        class_names = [f'Dígito {i}' for i in range(10)]
+    elif current_dataset == 'fashion':
+        images = stored_images['fashion']
+        class_names = ['Camiseta', 'Pantalón', 'Suéter', 'Vestido', 'Abrigo', 
+                       'Sandalia', 'Camisa', 'Zapatilla', 'Bolso', 'Bota']
+    elif current_dataset == 'cifar':
+        images = stored_images['cifar']
+        class_names = ['Avión', 'Automóvil', 'Pájaro', 'Gato', 'Ciervo', 
+                       'Perro', 'Rana', 'Caballo', 'Barco', 'Camión']
+    else:  # geo
+        images = stored_images['geo']
+        class_names = ['Círculo', 'Cuadrado', 'Triángulo', 'Rectángulo', 'Elipse', 'Pentágono', 'Hexágono']
+    
+    num_images = 1  # Número de imágenes a mostrar
+    indices = np.random.choice(len(images), num_images, replace=False)
+    selected_images = [images[i] for i in indices]
+    
+    for i, image in enumerate(selected_images):
+        if current_dataset in ['mnist', 'fashion', 'geo']:
+            img = Image.fromarray((image.squeeze() * 255).astype(np.uint8))
+        else:
+            img = Image.fromarray((image * 255).astype(np.uint8))
+        
+        img = img.resize((150, 150), Image.NEAREST)
+        photo = ImageTk.PhotoImage(img)
+        img_label = ttk.Label(left_image_frame, image=photo)
+        img_label.image = photo
+        img_label.grid(row=i//2, column=i%2, padx=5, pady=5)
+        
+        predictions = classify_image(image)
+        top_3 = np.argsort(predictions)[-3:][::-1]
+        
+        result_frame = ttk.Frame(left_image_frame)
+        result_frame.grid(row=i//2, column=(i%2)+2, padx=5, pady=5, sticky='w')
+        
+        for j, idx in enumerate(top_3):
+            prob = predictions[idx] * 100
+            label = ttk.Label(result_frame, text=f"{class_names[idx]}: {prob:.2f}%", font=("Arial", 10))
+            label.pack(anchor='w')
+        
+        # Solicitar al usuario que confirme o corrija la clasificación
+        correct_label = ask_user_for_label(class_names)
+        if correct_label is not None:
+            # Actualizar la precisión y las predicciones
+            update_accuracy(predictions, correct_label, image)
+            
+            update_result_text(f"Clasificación confirmada/corregida como {class_names[correct_label]}")
+            
+            # Evaluar la precisión general
+            evaluate_overall_accuracy()
+        else:
+            update_result_text("Clasificación no confirmada.")
+
+# Función para cargar una imagen del usuario
+def load_user_image():
+    global user_images, user_labels, previous_predictions
+    file_path = filedialog.askopenfilename(filetypes=[("Image files", "*.png *.jpg *.jpeg *.bmp")])
+    if file_path:
+        # Limpiar el frame de la imagen del usuario
+        for widget in right_image_frame.winfo_children():
+            widget.destroy()
+        
+        # Cargar y mostrar la imagen
+        img = Image.open(file_path)
+        img = img.resize((150, 150), Image.LANCZOS)
+        photo = ImageTk.PhotoImage(img)
+        img_label = ttk.Label(right_image_frame, image=photo)
+        img_label.image = photo
+        img_label.grid(row=0, column=0, padx=5, pady=5)
+        
+        # Preparar la imagen para la clasificación
+        if current_dataset in ['mnist', 'fashion', 'geo']:
+            img_array = np.array(img.convert('L').resize((28, 28))) / 255.0
+            img_array = np.expand_dims(img_array, -1)
+        else:  # cifar
+            img_array = np.array(img.convert('RGB').resize((32, 32))) / 255.0
+        # Preparar la imagen para la clasificación
+        if current_dataset in ['mnist', 'fashion', 'geo']:
+            img_array = np.array(img.convert('L').resize((28, 28))) / 255.0
+            img_array = np.expand_dims(img_array, -1)
+        else:  # cifar
+            img_array = np.array(img.convert('RGB').resize((32, 32))) / 255.0
+
+        # Clasificar la imagen
+        predictions = classify_image(img_array)
+        
+        if current_dataset == 'mnist':
+            class_names = [f'Dígito {i}' for i in range(10)]
+        elif current_dataset == 'fashion':
+            class_names = ['Camiseta', 'Pantalón', 'Suéter', 'Vestido', 'Abrigo',
+                           'Sandalia', 'Camisa', 'Zapatilla', 'Bolso', 'Bota']
+        elif current_dataset == 'cifar':
+            class_names = ['Avión', 'Automóvil', 'Pájaro', 'Gato', 'Ciervo', 
+                           'Perro', 'Rana', 'Caballo', 'Barco', 'Camión']
+        else:  # geo
+            class_names = ['Círculo', 'Cuadrado', 'Triángulo', 'Rectángulo', 'Elipse', 'Pentágono', 'Hexágono']
+        
+        top_3 = np.argsort(predictions)[-3:][::-1]
+        
+        result_frame = ttk.Frame(right_image_frame)
+        result_frame.grid(row=0, column=1, padx=5, pady=5, sticky='w')
+        
+        for j, idx in enumerate(top_3):
+            prob = predictions[idx] * 100
+            label = ttk.Label(result_frame, text=f"{class_names[idx]}: {prob:.2f}%", font=("Arial", 10))
+            label.pack(anchor='w')
+        
+        # Solicitar al usuario que confirme o corrija la clasificación
+        correct_label = ask_user_for_label(class_names)
+        if correct_label is not None:
+            user_images.append(img_array)
+            user_labels.append(correct_label)
+            
+            # Actualizar la precisión y las predicciones
+            update_accuracy(predictions, correct_label, img_array)
+            
+            update_result_text(f"Imagen agregada al conjunto de entrenamiento como {class_names[correct_label]}")
+            
+            # Evaluar la precisión en las imágenes del usuario
+            evaluate_overall_accuracy()
+        else:
+            update_result_text("Imagen cargada pero no agregada al conjunto de entrenamiento.")
+
+# Función para solicitar la etiqueta correcta al usuario
+def ask_user_for_label(class_names):
+    dialog = tk.Toplevel(root)
+    dialog.title("Confirmar clasificación")
+    
+    label = ttk.Label(dialog, text="¿Es correcta la clasificación? Si no, selecciona la correcta:")
+    label.pack(pady=10)
+    
+    var = tk.IntVar(value=-1)
+    
+    for i, name in enumerate(class_names):
+        rb = ttk.Radiobutton(dialog, text=name, variable=var, value=i)
+        rb.pack(anchor='w')
+    
+    def on_ok():
+        dialog.destroy()
+    
+    ok_button = ttk.Button(dialog, text="OK", command=on_ok)
+    ok_button.pack(pady=10)
+    
+    dialog.transient(root)
+    dialog.grab_set()
+    root.wait_window(dialog)
+    
+    selected_value = var.get()
+    if selected_value != -1 and selected_value < len(class_names):
+        return selected_value
+    else:
+        return None
+
+# Función para actualizar la precisión
+def update_accuracy(predictions, correct_label, image):
+    global last_trained_accuracy, previous_predictions
+    predicted_label = np.argmax(predictions)
+    
+    if predicted_label == correct_label:
+        # La predicción fue correcta, aumentar la confianza
+        predictions[correct_label] = min(predictions[correct_label] * 1.1, 1.0)
+    else:
+        # La predicción fue incorrecta, ajustar
+        predictions[predicted_label] *= 0.9
+        predictions[correct_label] = max(predictions[correct_label] * 1.2, 0.1)
+    
+    # Normalizar las predicciones
+    predictions /= np.sum(predictions)
+    
+    # Actualizar las predicciones anteriores
+    image_key = hash(image.tobytes())
+    previous_predictions[image_key] = predictions
+    
+    # Ajustar el accuracy general
+    adjustment_factor = 0.1  # 10% de ajuste
+    new_accuracy = 1.0 if predicted_label == correct_label else 0.0
+    last_trained_accuracy = last_trained_accuracy * (1 - adjustment_factor) + new_accuracy * adjustment_factor
+
+    update_result_text(f"Precisión actualizada: {last_trained_accuracy*100:.2f}%")
+
+# Función para evaluar la precisión general
+def evaluate_overall_accuracy():
+    global last_trained_accuracy
+    
+    # Evaluar la precisión en las imágenes del usuario
+    if user_images and user_labels:
+        correct_predictions = sum(1 for i, label in enumerate(user_labels) if np.argmax(classify_image(user_images[i])) == label)
+        user_accuracy = correct_predictions / len(user_images)
+    else:
+        user_accuracy = 0
+    
+    # Combinar la precisión de las imágenes del usuario con la precisión general
+    if user_images:
+        combined_accuracy = (last_trained_accuracy + user_accuracy) / 2
+    else:
+        combined_accuracy = last_trained_accuracy
+    
+    last_trained_accuracy = combined_accuracy
+    update_result_text(f"Precisión general actualizada: {last_trained_accuracy*100:.2f}%")
+
+# Función para cambiar el dataset
+def change_dataset():
+    global current_model, current_dataset
+    dataset = dataset_var.get()
+    if dataset == 'Dígitos':
+        current_model = model_mnist
+        current_dataset = 'mnist'
+    elif dataset == 'Ropa':
+        current_model = model_fashion
+        current_dataset = 'fashion'
+    elif dataset == 'Animales y vehículos':
+        current_model = model_cifar
+        current_dataset = 'cifar'
+    else:  # Figuras geométricas
+        current_model = model_geo
+        current_dataset = 'geo'
+    
+    # Reiniciar el estado de los botones
+    train_button.pack(side=tk.LEFT, padx=5)
+    change_dataset_button.pack(side=tk.LEFT, padx=5)
+    load_model_button.pack(side=tk.LEFT, padx=5)
+    save_model_button.pack_forget()
+    select_button.pack_forget()
+    load_image_button.pack_forget()
+    
+    # Limpiar los frames de imágenes
+    for frame in [left_image_frame, right_image_frame]:
+        for widget in frame.winfo_children():
+            widget.destroy()
+    
+    update_result_text(f"Se cambió a {dataset}\nPor favor, entrene la red.")
+
+# Función para actualizar el texto en el cuadro de resultados
+def update_result_text(text):
+    result_text.config(state='normal')
+    result_text.delete(1.0, tk.END)
+    result_text.insert(tk.END, text)
+    result_text.config(state='disabled')
+
+# Crear la ventana principal
+root = tk.Tk()
+root.title("Clasificador de imágenes")
+root.state('zoomed')  # Abre la ventana maximizada
+
+# Crear un estilo
+style = ttk.Style()
+style.theme_use('clam')
+style.configure('TButton', font=('Arial', 15), background='#000000', foreground='white')
+style.map('TButton', background=[('active', '#4A5A78')])
+style.configure('TCombobox', font=('Arial', 15), fieldbackground='#000000', foreground='white', selectbackground='#4A5A78')
+style.map('TCombobox', fieldbackground=[('readonly', '#000000')])
+root.option_add('*TCombobox*Listbox.background', '#000000')
+root.option_add('*TCombobox*Listbox.foreground', 'white')
+root.option_add('*TCombobox*Listbox.selectBackground', '#4A5A78')
+
+# Frame principal
+main_frame = ttk.Frame(root, padding="10")
+main_frame.pack(fill=tk.BOTH, expand=True)
+
+# Frame superior para controles
+control_frame = ttk.Frame(main_frame)
+control_frame.pack(fill=tk.X, pady=10)
+
+# Crear y colocar los widgets en el control_frame
+dataset_var = tk.StringVar(value="Dígitos")
+dataset_menu = ttk.Combobox(control_frame, textvariable=dataset_var, 
+                            values=["Dígitos", "Ropa", "Animales y vehículos", "Figuras geométricas"], 
+                            state="readonly", width=30, style='TCombobox')
+dataset_menu.pack(side=tk.LEFT, padx=5)
+
+change_dataset_button = ttk.Button(control_frame, text="Escoger clasificación", command=change_dataset)
+change_dataset_button.pack(side=tk.LEFT, padx=5)
+
+train_button = ttk.Button(control_frame, text="Entrenar red", command=train_network)
+train_button.pack(side=tk.LEFT, padx=5)
+
+load_model_button = ttk.Button(control_frame, text="Cargar entrenamiento", command=load_training)
+load_model_button.pack(side=tk.LEFT, padx=5)
+
+# Estos botones se crean pero no se colocan inicialmente
+select_button = ttk.Button(control_frame, text="Seleccionar imagen aleatoria", command=select_images)
+select_button.pack(side=tk.LEFT, padx=5)
+load_image_button = ttk.Button(control_frame, text="Cargar imagen", command=load_user_image)
+load_image_button.pack(side=tk.LEFT, padx=5)
+save_model_button = ttk.Button(control_frame, text="Guardar entrenamiento", command=save_training)
+save_model_button.pack(side=tk.LEFT, padx=5)
+
+# Frame para las imágenes
+image_frame = ttk.Frame(main_frame)
+image_frame.pack(fill=tk.BOTH, expand=True, pady=20)
+
+# Dividir el frame de imágenes en izquierdo y derecho
+left_image_frame = ttk.Frame(image_frame)
+left_image_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+right_image_frame = ttk.Frame(image_frame)
+right_image_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
+
+# Frame para los resultados
+result_frame = ttk.Frame(main_frame)
+result_frame.pack(fill=tk.X, pady=10)
+
+result_text = tk.Text(result_frame, height=6, width=60, font=("Arial", 15), state='disabled')
+result_text.pack(fill=tk.X)
+
+# Frame para la barra de progreso
+progress_frame = ttk.Frame(main_frame)
+progress_frame.pack(fill=tk.X, pady=10)
+
+progress_bar = ttk.Progressbar(progress_frame, length=300, mode='determinate')
+progress_bar.pack(side=tk.LEFT, padx=(0, 10), expand=True, fill=tk.X)
+
+progress_label = ttk.Label(progress_frame, text="")
+progress_label.pack(side=tk.LEFT)
+
+# Iniciar el bucle principal
+root.mainloop()
